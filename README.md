@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="assets/dgx-spark-vision-banner.png"
+       alt="Two NVIDIA DGX Spark systems connected over a 200G QSFP fabric"
+       width="1000">
+</p>
+
 # DeepSeek V4 Flash Vision on 2x DGX Spark
 
 Reproducible two-node vLLM deployment for
