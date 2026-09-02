@@ -111,7 +111,7 @@ Container Toolkit rather than replacing them with unrelated packages.
 
 ```bash
 sudo apt update
-sudo apt install -y git curl jq python3-venv rdma-core ibverbs-utils infiniband-diags
+sudo apt install -y git curl jq rsync python3-venv rdma-core ibverbs-utils infiniband-diags
 sudo usermod -aG docker "$USER"
 ```
 
@@ -217,9 +217,9 @@ If API authentication is enabled, set the same `VLLM_API_KEY` on both nodes.
 Never expose port 8888 directly to the public Internet without authentication
 and network controls.
 
-## 4. Download the pinned model on both nodes
+## 4. Download once, then replicate over ConnectX
 
-The download is resumable. Run this separately on each node:
+Download the pinned snapshot on the head node only. The download is resumable:
 
 ```bash
 python3 -m venv ~/.venvs/huggingface
@@ -230,10 +230,10 @@ export HF_HUB_DISABLE_XET=1
 ~/.venvs/huggingface/bin/hf download \
   deepseek-ai/DeepSeek-V4-Flash-Vision-Exp \
   --revision e46e16bf6035c6f317eb2ac7458eb0362926d402 \
-  --cache-dir "$HF_HOME"
+  --cache-dir "$HF_HOME/hub"
 ```
 
-Verify each copy:
+Verify the head copy before transferring it:
 
 ```bash
 export HF_HOME="$HOME/.cache/huggingface"
@@ -244,12 +244,60 @@ test -f "$SNAP/model.safetensors.index.json"
 test -f "$SNAP/model-00048-of-00048.safetensors"
 test "$(find "$SNAP" -maxdepth 1 -name 'model-*.safetensors' | wc -l)" -eq 48
 test -z "$(find -L "$SNAP" -type l -print -quit)"
+test -z "$(find "$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp" -name '*.incomplete' -print -quit)"
 du -sh "$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp"
 ```
 
-Expected size is approximately `157G`. Do not start with missing shards or
-`.incomplete` files. Keep `HF_HUB_OFFLINE=1` in `.env.dspark` after download;
-this prevents an upstream change or network problem during production boot.
+Expected size is approximately `157G`. Do not continue with missing shards or
+`.incomplete` files.
+
+Transfer the complete repository cache to the worker over ConnectX-7. `WORKER`
+must resolve to the worker's ConnectX address, not its management interface.
+The same absolute `HF_HOME` path is assumed on both nodes:
+
+```bash
+export HF_HOME="$HOME/.cache/huggingface"
+WORKER=spark-b
+MODEL_CACHE="$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp"
+
+# Confirm that SSH itself is using the ConnectX path.
+ssh "$WORKER" 'hostname; echo "$SSH_CONNECTION"'
+
+ssh "$WORKER" "mkdir -p '$MODEL_CACHE'"
+rsync -aH --whole-file --partial --info=progress2 \
+  "$MODEL_CACHE/" \
+  "$WORKER:$MODEL_CACHE/"
+```
+
+Do not add compression: safetensors are effectively incompressible and
+compression wastes CPU. Copy the entire `models--...` directory rather than
+only `snapshots/$REV`; snapshot entries link to files under `blobs/`. Rerun the
+same `rsync` command after an interruption and it will safely complete the
+destination.
+
+Run the same verification on the worker:
+
+```bash
+export HF_HOME="$HOME/.cache/huggingface"
+WORKER=spark-b
+REV=e46e16bf6035c6f317eb2ac7458eb0362926d402
+
+ssh "$WORKER" \
+  "HF_HOME='$HF_HOME' REV='$REV' bash -s" <<'VERIFY'
+set -euo pipefail
+SNAP="$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp/snapshots/$REV"
+test -f "$SNAP/model.safetensors.index.json"
+test -f "$SNAP/model-00048-of-00048.safetensors"
+test "$(find "$SNAP" -maxdepth 1 -name 'model-*.safetensors' | wc -l)" -eq 48
+test -z "$(find -L "$SNAP" -type l -print -quit)"
+test -z "$(find "$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp" -name '*.incomplete' -print -quit)"
+du -sh "$HF_HOME/hub/models--deepseek-ai--DeepSeek-V4-Flash-Vision-Exp"
+VERIFY
+```
+
+Both nodes still serve from local NVMe; ConnectX is used only for replication.
+Keep `HF_HUB_OFFLINE=1` in `.env.dspark` after the copy so production boot does
+not depend on Hugging Face availability or a moving upstream state.
 
 ## 5. Build the pinned runtime and copy it to the worker
 

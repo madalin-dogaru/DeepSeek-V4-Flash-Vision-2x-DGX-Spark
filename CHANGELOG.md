@@ -9,3 +9,5 @@
 - Added coordinated two-rank supervision and bounded incident capture.
 - Added image-content, image-cache-alignment, profile, and shutdown checks.
 - Documented the exact deployed stack, acceptance evidence, and failure modes.
+- Changed model staging to one pinned download followed by verified ConnectX
+  replication to the worker's local NVMe cache.
