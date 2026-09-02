@@ -25,6 +25,8 @@ service = config["services"]["vllm-dspark"]
 command = service["command"][2]
 runtime_command = command.replace("$$", "$")
 expected_revision = os.environ["EXPECTED_REVISION"]
+model_ref = chr(36) + "{DSPARK_MODEL_OFFICIAL}"
+revision_ref = chr(36) + "{DSPARK_REVISION}"
 
 assert service["image"] == "local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10"
 assert service["environment"]["DSPARK_MODEL_OFFICIAL"] == "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
@@ -45,10 +47,10 @@ required = (
 )
 for value in required:
     assert value in command, value
-assert "--revision \"${DSPARK_REVISION}\"" in runtime_command
+assert f"--revision \"{revision_ref}\"" in runtime_command
 assert "\"revision\":\"%s\"" in runtime_command
-assert "${DSPARK_MODEL_OFFICIAL}" in runtime_command
-assert "${DSPARK_REVISION}" in runtime_command
+assert model_ref in runtime_command
+assert revision_ref in runtime_command
 assert "\"enable_adaptive_verification\":true" not in command
 assert "--enable-flashinfer-autotune" not in command
 assert (
