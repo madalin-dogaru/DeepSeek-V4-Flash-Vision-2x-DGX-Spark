@@ -58,7 +58,7 @@ for index in "${!hcas[@]}"; do
 
   if [[ ${#peer_ips[@]} -eq 2 ]]; then
     peer="${peer_ips[$index]}"
-    ping -I "$netdev" -M do -s 8972 -c 3 -W 2 "$peer" >/dev/null
+    ping -I "$netdev" -M "do" -s 8972 -c 3 -W 2 "$peer" >/dev/null
     printf 'OK  %s -> %s  jumbo payload=8972\n' "$netdev" "$peer"
   fi
 done
