@@ -34,6 +34,8 @@ services:
       HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
       TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-1}"
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-1}"
+      DSPARK_MODEL_OFFICIAL: "${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
+      DSPARK_REVISION: "${DSPARK_REVISION:?DSPARK_REVISION must be set to the pinned model commit}"
       VLLM_HOST_IP: "${VLLM_HOST_IP}"
       NCCL_IB_DISABLE: "0"
       NCCL_NET: IB
@@ -67,11 +69,9 @@ services:
       - >
         API_KEY_ARGS=();
         if [ -n "$${VLLM_API_KEY:-}" ]; then API_KEY_ARGS=(--api-key "$${VLLM_API_KEY}"); fi;
-        REVISION_ARGS=();
-        if [ -n "$${DSPARK_REVISION:-}" ]; then REVISION_ARGS=(--revision "$${DSPARK_REVISION}"); fi;
-        SPECULATIVE_CONFIG=$$(printf '{"method":"dspark","model":"%s","num_speculative_tokens":%s,"draft_sample_method":"probabilistic","enable_adaptive_verification":false}' "${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}" "${OFFICIAL_MTP_NUM_TOKENS:-3}");
-        exec vllm serve "${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
-        "$${REVISION_ARGS[@]}"
+        SPECULATIVE_CONFIG=$$(printf '{"method":"dspark","model":"%s","revision":"%s","num_speculative_tokens":%s,"draft_sample_method":"probabilistic","enable_adaptive_verification":false}' "$${DSPARK_MODEL_OFFICIAL}" "$${DSPARK_REVISION}" "${OFFICIAL_MTP_NUM_TOKENS:-3}");
+        exec vllm serve "$${DSPARK_MODEL_OFFICIAL}"
+        --revision "$${DSPARK_REVISION}"
         --served-model-name "${SERVED_MODEL_NAME:-deepseek-v4-flash-vision-exp}"
         --host "${VLLM_HOST:-0.0.0.0}"
         --port "${VLLM_PORT:-8888}"

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-03
+
+- Fixed clean offline startup by propagating the immutable model revision to
+  both the primary model loader and the independent MTP draft loader.
+- Added profile regressions that verify both revision paths and reject an
+  unpinned Compose configuration.
+- Corrected the default worker checkout directory in the environment template.
+
 ## 2026-09-02
 
 - Added the pinned official vLLM Vision runtime for two DGX Spark systems.

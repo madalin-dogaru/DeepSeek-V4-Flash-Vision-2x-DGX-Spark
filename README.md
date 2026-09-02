@@ -661,6 +661,7 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 | One container restarts while the other waits forever | Tensor-parallel ranks were managed independently | Use `restart: no` and the coordinated supervisor |
 | NCCL uses only about half the expected link bandwidth | Only one of the QSFP port's two logical RoCE devices is configured, or MTU remains 1500 | Configure both subnets at MTU 9000, list both devices in `NCCL_IB_HCA`, and run `verify-dual-roce.sh` |
 | First boot appears frozen | 48 model shards plus FlashInfer/Triton JIT compilation | Watch both logs and wait while both containers remain alive |
+| Fresh offline boot reports `LocalEntryNotFoundError` despite a complete pinned snapshot | An older recipe did not propagate the pinned revision to the container and MTP loader | Update the recipe; do not fabricate `refs/main` or disable offline mode |
 | Short answer is empty or ends at the token limit | Reasoning consumed `max_tokens` | Raise `max_tokens` or request lower/off reasoning |
 | Local image path is rejected | No host path was granted to vLLM | Use base64/HTTP, or deliberately add a read-only mount and `--allowed-local-media-path` |
 | A tool-enabled client gets malformed continuation | Client replayed a truncated tool call | Honor `finish_reason`; never replay incomplete tool arguments |

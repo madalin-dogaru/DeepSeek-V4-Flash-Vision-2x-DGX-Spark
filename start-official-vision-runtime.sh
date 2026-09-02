@@ -23,6 +23,13 @@ set +a
 : "${MASTER_ADDR:?MASTER_ADDR must be set}"
 : "${VLLM_HOST_IP:?VLLM_HOST_IP must be set}"
 : "${WORKER_VLLM_HOST_IP:?WORKER_VLLM_HOST_IP must be set}"
+: "${DSPARK_MODEL_OFFICIAL:?DSPARK_MODEL_OFFICIAL must be set}"
+: "${DSPARK_REVISION:?DSPARK_REVISION must be set}"
+
+if [[ ! "$DSPARK_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "DSPARK_REVISION must be an immutable 40-character lowercase commit hash" >&2
+  exit 2
+fi
 
 case "${OFFICIAL_MTP_NUM_TOKENS:-3}" in
   3|6|9) ;;
@@ -56,7 +63,7 @@ scp "${ssh_opts[@]}" "$COMPOSE_FILE" \
   "$WORKER_HOST:$WORKER_SCRIPT_DIR/docker-compose.official-vision.yml"
 
 compose_head=(docker compose -p "$PROJECT_NAME" --env-file "$SOURCE_ENV_FILE" -f "$COMPOSE_FILE")
-worker_env="NODE_RANK=1 HEADLESS=1 VLLM_HOST_IP=$WORKER_VLLM_HOST_IP DSPARK_RESTART_POLICY=${DSPARK_RESTART_POLICY:-no}"
+worker_env="NODE_RANK=1 HEADLESS=1 VLLM_HOST_IP=$WORKER_VLLM_HOST_IP DSPARK_MODEL_OFFICIAL=$DSPARK_MODEL_OFFICIAL DSPARK_REVISION=$DSPARK_REVISION DSPARK_RESTART_POLICY=${DSPARK_RESTART_POLICY:-no}"
 worker_compose="docker compose -p '$PROJECT_NAME' --env-file .env.dspark -f docker-compose.official-vision.yml"
 
 NODE_RANK=0 HEADLESS='' VLLM_HOST_IP="$VLLM_HOST_IP" \
