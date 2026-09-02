@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env.dspark}"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.official-vision.yml"
 EXPECTED_REVISION="e46e16bf6035c6f317eb2ac7458eb0362926d402"
+export EXPECTED_REVISION
 
 set -a
 # shellcheck disable=SC1090
@@ -16,13 +17,14 @@ NODE_RANK=0 HEADLESS='' VLLM_HOST_IP="$VLLM_HOST_IP" DSPARK_RESTART_POLICY=no \
     -f "$COMPOSE_FILE" config --format json \
   | python3 -c '
 import json
+import os
 import sys
 
 config = json.load(sys.stdin)
 service = config["services"]["vllm-dspark"]
 command = service["command"][2]
 runtime_command = command.replace("$$", "$")
-expected_revision = "'"$EXPECTED_REVISION"'"
+expected_revision = os.environ["EXPECTED_REVISION"]
 
 assert service["image"] == "local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10"
 assert service["environment"]["DSPARK_MODEL_OFFICIAL"] == "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
@@ -83,6 +85,7 @@ NODE_RANK=1 HEADLESS=1 VLLM_HOST_IP="$WORKER_VLLM_HOST_IP" DSPARK_RESTART_POLICY
     -f "$COMPOSE_FILE" config --format json \
   | python3 -c '
 import json
+import os
 import sys
 
 service = json.load(sys.stdin)["services"]["vllm-dspark"]
@@ -91,7 +94,7 @@ assert "--node-rank \"1\"" in command
 assert command.rstrip().endswith("--headless")
 assert service["environment"]["VLLM_HOST_IP"] == "'"$WORKER_VLLM_HOST_IP"'"
 assert service["environment"]["HEADLESS"] == "1"
-assert service["environment"]["DSPARK_REVISION"] == "'"$EXPECTED_REVISION"'"
+assert service["environment"]["DSPARK_REVISION"] == os.environ["EXPECTED_REVISION"]
 '
 
 echo "Official DeepSeek Vision compose profile verified."
