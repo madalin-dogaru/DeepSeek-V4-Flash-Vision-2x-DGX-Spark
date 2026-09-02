@@ -13,3 +13,7 @@
   replication to the worker's local NVMe cache.
 - Added optional, non-owning Spark Studio endpoint registration with duplicate
   detection and an integration regression test.
+- Enabled both logical RoCE paths exposed by one DGX Spark QSFP connection,
+  with merged-NIC NCCL scheduling and persistent MTU 9000 configuration.
+- Added a read-only dual-path fabric check and documented measured raw RDMA,
+  NCCL collective, long-context, and production traffic-distribution evidence.

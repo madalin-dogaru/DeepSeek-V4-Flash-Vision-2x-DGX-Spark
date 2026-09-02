@@ -45,6 +45,8 @@ assert (
     service["environment"]["FLASHINFER_WORKSPACE_BASE"]
     == "/cache/huggingface/flashinfer-official-4802-gb10-stable"
 )
+assert service["environment"]["NCCL_IB_HCA"] == "rocep1s0f0,roceP2p1s0f0"
+assert service["environment"]["NCCL_IB_MERGE_NICS"] == "1"
 
 rendered = json.dumps(config).lower()
 for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla", "qwen"):

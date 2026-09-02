@@ -54,8 +54,10 @@ OpenAI client
     v
 Spark A / head / node rank 0
     DeepSeek worker TP0 + API server
-    |
-    | ConnectX-7 RoCE + NCCL, TCP rendezvous :25000
+    |\
+    | +-- RoCE path 0: 10.100.32.1 <-> 10.100.32.2
+    | +-- RoCE path 1: 10.100.33.1 <-> 10.100.33.2
+    |     one QSFP cable, two logical ConnectX-7 paths, NCCL merged
     v
 Spark B / worker / node rank 1
     DeepSeek worker TP1, headless
@@ -78,10 +80,20 @@ The tested profile produced:
 - A real 262,043-token prompt completed with exact beginning/end recall.
 - Native vision, automatic tool calling, and worker-loss recovery passed.
 - Recovery after an intentional worker kill took about 498 seconds.
+- Each RoCE path sustained about 109 Gbit/s in `ib_write_bw`; both paths run
+  concurrently sustained 196.09 Gbit/s aggregate.
+- A two-rank, 8 GiB-per-rank NCCL all-gather sustained a median 22.952 GB/s
+  bus bandwidth (183.62 Gbit/s) over five measured iterations.
+- Production vLLM traffic increased both RoCE counters almost exactly 50/50
+  during a 128,111-token prompt, which recalled both distant markers exactly.
+- An identical short-decode probe measured 31.23 tokens/s before and 31.39
+  tokens/s after enabling the second path. This change improves bulk
+  collectives and transfer-heavy prefill/vision work, not steady decode.
 
 The 52-58 tokens/s figure is **not** a full 1M-occupied-context benchmark. The
 server allowed 1M while those prompts were short. Full-window decode speed has
-not been measured.
+not been measured. There was no identical pre-change vision/prefill benchmark,
+so this validation does not claim a percentage improvement for vision TTFT.
 
 ## Before installation
 
@@ -132,31 +144,77 @@ show_gids
 ls -la /dev/infiniband
 ```
 
-Find the Ethernet interface belonging to the connected QSFP port and its
-matching RoCE device. Example from the tested pair:
+One physical DGX Spark QSFP connection exposes two independent logical paths.
+Find both active Ethernet interfaces and their matching RoCE devices. Example
+from the tested pair:
 
 ```text
-rocep1s0f0  <-> enp1s0f0np0
-head IP:       10.100.32.1/24
-worker IP:     10.100.32.2/24
-RoCE GID:      3
+RoCE device   Ethernet device   Head IP          Worker IP
+rocep1s0f0    enp1s0f0np0      10.100.32.1/24   10.100.32.2/24
+roceP2p1s0f0  enP2p1s0f0np0    10.100.33.1/24   10.100.33.2/24
+RoCE GID index: 3
+Ethernet MTU:   9000 on all four interfaces
 ```
 
 These names are examples, not universal constants. A cable in the other port
 usually produces `...f1...` names. Set the values discovered on the actual
 machines.
 
+Configure disjoint subnets and MTU 9000 persistently. Do not use temporary
+`ip link set` commands as the final configuration. On the tested pair, the
+relevant part of `/etc/netplan/99-nvidia-sync-cluster.yaml` is:
+
+```yaml
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    enp1s0f0np0:
+      dhcp4: false
+      mtu: 9000
+      addresses: [10.100.32.1/24] # use .2 on the worker
+    enP2p1s0f0np0:
+      dhcp4: false
+      mtu: 9000
+      addresses: [10.100.33.1/24] # use .2 on the worker
+```
+
+Back up the existing file, merge these fields without deleting unrelated
+interfaces, validate, and then apply on each node:
+
+```bash
+sudo cp -a /etc/netplan/99-nvidia-sync-cluster.yaml \
+  /etc/netplan/99-nvidia-sync-cluster.yaml.bak
+sudo netplan generate
+sudo netplan apply
+```
+
 From the head, all of these must work without interaction:
 
 ```bash
 ping -c 3 10.100.32.2
+ping -c 3 10.100.33.2
+ping -M do -s 8972 -c 3 10.100.32.2
+ping -M do -s 8972 -c 3 10.100.33.2
 ssh spark-b hostname
 ssh spark-b docker ps
 ```
 
+After creating `.env.dspark` in the next section, run the included read-only
+check on both nodes. Peer addresses must follow `NCCL_IB_HCA` order:
+
+```bash
+# Head
+ROCE_PEER_IPS=10.100.32.2,10.100.33.2 ./scripts/verify-dual-roce.sh
+
+# Worker
+ROCE_PEER_IPS=10.100.32.1,10.100.33.1 ./scripts/verify-dual-roce.sh
+```
+
 Run NVIDIA's
 [multi-Spark NCCL test](https://build.nvidia.com/spark/nccl/overview) before
-debugging vLLM. A TCP ping is not proof that RoCE/NCCL is configured correctly.
+debugging vLLM. Run it with `NCCL_DEBUG=INFO` and confirm that its logs name
+both RoCE devices. A TCP or jumbo ping proves neither RDMA nor NCCL operation.
 
 ## 2. Clone the repository on both nodes
 
@@ -192,12 +250,18 @@ WORKER_SCRIPT_DIR=/home/YOUR_USER/DeepSeek-V4-Flash-Vision-2x-DGX-Spark
 MASTER_ADDR=10.100.32.1
 VLLM_HOST_IP=10.100.32.1
 WORKER_VLLM_HOST_IP=10.100.32.2
-NCCL_IB_HCA=rocep1s0f0
+NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0
 NCCL_SOCKET_IFNAME=enp1s0f0np0
 TP_SOCKET_IFNAME=enp1s0f0np0
 GLOO_SOCKET_IFNAME=enp1s0f0np0
 NCCL_IB_GID_INDEX=3
+NCCL_IB_MERGE_NICS=1
 ```
+
+`NCCL_SOCKET_IFNAME`, `TP_SOCKET_IFNAME`, and `GLOO_SOCKET_IFNAME` remain on
+one interface because they carry bootstrap/control traffic. The comma-separated
+`NCCL_IB_HCA` value is what enables both RDMA data paths. `NCCL_IB_MERGE_NICS=1`
+allows NCCL to aggregate those paths.
 
 Edit the worker's copy if its interface names or cache path differ. Do not
 change these tested serving values for the first boot:
@@ -332,12 +396,14 @@ ssh spark-b "docker image inspect '$IMAGE' --format '{{.Id}}'"
 ```bash
 ./scripts/test-official-vision-profile.sh
 ./scripts/test-supervisor-shutdown.sh
+ROCE_PEER_IPS=10.100.32.2,10.100.33.2 ./scripts/verify-dual-roce.sh
 ```
 
 The first check renders both node commands and rejects accidental Qwen,
 legacy hotfix, wrong MTP, wrong context, or FlashInfer-autotune configuration.
 The second checks that stopping the supervisor terminates a startup process
-group and performs coordinated cleanup.
+group and performs coordinated cleanup. The third proves that both configured
+RoCE paths are active at MTU 9000 and carry a full 8972-byte ping payload.
 
 ## 7. First launch
 
@@ -587,6 +653,7 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 | Crash during FlashInfer crossover tuning | GB10 row-strided metadata can be routed into a dense-row prefill path | Keep `--no-enable-flashinfer-autotune` and the isolated workspace |
 | Machines become difficult to SSH into during load | DGX Spark unified memory is overcommitted | Keep utilization at `0.90`, stop other models, disable earlyoom |
 | One container restarts while the other waits forever | Tensor-parallel ranks were managed independently | Use `restart: no` and the coordinated supervisor |
+| NCCL uses only about half the expected link bandwidth | Only one of the QSFP port's two logical RoCE devices is configured, or MTU remains 1500 | Configure both subnets at MTU 9000, list both devices in `NCCL_IB_HCA`, and run `verify-dual-roce.sh` |
 | First boot appears frozen | 48 model shards plus FlashInfer/Triton JIT compilation | Watch both logs and wait while both containers remain alive |
 | Short answer is empty or ends at the token limit | Reasoning consumed `max_tokens` | Raise `max_tokens` or request lower/off reasoning |
 | Local image path is rejected | No host path was granted to vLLM | Use base64/HTTP, or deliberately add a read-only mount and `--allowed-local-media-path` |
@@ -608,6 +675,9 @@ and `url`; `base_url` is not accepted by that registration endpoint.
   the tested decode path.
 - **Local weights on both nodes:** more disk use, fewer network and mount failure
   modes during startup.
+- **Two merged RoCE paths:** one QSFP cable exposes two logical devices on DGX
+  Spark. Listing both HCAs and using MTU 9000 avoids leaving roughly half of the
+  tested inter-node bandwidth idle.
 
 ## Updating safely
 
