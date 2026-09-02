@@ -35,7 +35,10 @@ jobs:
             scripts/*.sh
 
       - name: Check Python syntax
-        run: python3 -m py_compile scripts/live-vision-cache-regression.py
+        run: python3 -m py_compile scripts/*.py
+
+      - name: Test Spark Studio registration helper
+        run: python3 scripts/test-spark-studio-registration.py
 
       - name: Validate two-node compose profile
         env:

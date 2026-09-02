@@ -11,3 +11,5 @@
 - Documented the exact deployed stack, acceptance evidence, and failure modes.
 - Changed model staging to one pinned download followed by verified ConnectX
   replication to the worker's local NVMe cache.
+- Added optional, non-owning Spark Studio endpoint registration with duplicate
+  detection and an integration regression test.

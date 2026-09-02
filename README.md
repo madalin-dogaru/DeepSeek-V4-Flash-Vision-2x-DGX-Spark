@@ -537,6 +537,47 @@ model    = deepseek-v4-flash-vision-exp
 api_key  = the configured VLLM_API_KEY, or any placeholder if auth is disabled
 ```
 
+## Optional Spark Studio visibility
+
+[Spark Studio](https://github.com/TheAwaken1/Spark-Studio) can display and use
+an endpoint that this repository already manages. This is registration only:
+Spark Studio does not launch the model, own its containers, replace the
+coordinated supervisor, or change anything for existing API clients.
+
+When Spark Studio and vLLM run on the same head node:
+
+```bash
+./scripts/register-spark-studio.sh
+```
+
+When either service is elsewhere, provide URLs that are reachable from the
+Spark Studio host:
+
+```bash
+./scripts/register-spark-studio.sh \
+  --studio-url http://SPARK_STUDIO_HOST:7860 \
+  --endpoint-url http://HEAD_NODE_IP:8888
+```
+
+The helper verifies both services, checks the OpenAI-compatible `/v1/models`
+response, and avoids duplicate live registrations. Passing an endpoint ending
+in `/v1` is accepted and normalized automatically.
+
+The registered model is available to Spark Studio chat, benchmarks, health
+monitoring, and agent targeting. Spark Studio cannot provide native container
+logs, model load timing, or managed start/stop for an externally owned runtime;
+use this repository's systemd and log commands for those operations.
+
+Spark Studio's current external-endpoint contract has no API-key field and its
+registration probe is unauthenticated. Consequently, this integration requires
+`/v1/models` to be reachable without an API key. The helper fails clearly
+instead of registering a configuration Spark Studio cannot use. Do not expose
+an unauthenticated endpoint beyond a trusted host or network.
+
+You can also register it manually in Spark Studio under the vLLM page's
+**Connect existing endpoint** panel. The API payload shape is `engine`, `name`,
+and `url`; `base_url` is not accepted by that registration endpoint.
+
 ## Known traps and the fixes in this repository
 
 | Symptom | Cause | Correct action |
