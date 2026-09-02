@@ -1,0 +1,46 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-validation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Check shell syntax
+        run: |
+          for file in \
+            build-official-vision-runtime.sh \
+            start-official-vision-runtime.sh \
+            stop-official-vision-runtime.sh \
+            scripts/*.sh; do
+            bash -n "$file"
+          done
+
+      - name: Run ShellCheck
+        run: |
+          shellcheck \
+            build-official-vision-runtime.sh \
+            start-official-vision-runtime.sh \
+            stop-official-vision-runtime.sh \
+            scripts/*.sh
+
+      - name: Check Python syntax
+        run: python3 -m py_compile scripts/live-vision-cache-regression.py
+
+      - name: Validate two-node compose profile
+        env:
+          ENV_FILE: ${{ github.workspace }}/.env.dspark.example
+        run: ./scripts/test-official-vision-profile.sh
+
+      - name: Validate supervisor shutdown
+        run: ./scripts/test-supervisor-shutdown.sh

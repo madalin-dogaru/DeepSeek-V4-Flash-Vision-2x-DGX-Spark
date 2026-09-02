@@ -1,0 +1,29 @@
+[Unit]
+Description=DeepSeek V4 Flash Vision two-node inference cluster
+Documentation=https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@INSTALL_DIR@
+EnvironmentFile=@INSTALL_DIR@/.env.dspark
+Environment=START_SCRIPT=@INSTALL_DIR@/start-official-vision-runtime.sh
+Environment=STOP_SCRIPT=@INSTALL_DIR@/stop-official-vision-runtime.sh
+Environment=DSPARK_RESTART_POLICY=no
+ExecStart=@INSTALL_DIR@/scripts/supervise-dspark-cluster.sh
+Restart=on-failure
+RestartSec=60s
+TimeoutStopSec=120s
+KillMode=mixed
+LimitMEMLOCK=infinity
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

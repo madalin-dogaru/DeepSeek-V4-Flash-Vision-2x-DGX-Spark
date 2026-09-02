@@ -1,0 +1,5 @@
+.env.dspark
+logs/
+*.log
+__pycache__/
+*.pyc
