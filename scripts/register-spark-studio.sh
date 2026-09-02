@@ -25,10 +25,10 @@ EOF
 }
 
 need_value() {
-  [ "$#" -ge 2 ] && [ -n "$2" ] || {
+  if [ "$#" -lt 2 ] || [ -z "$2" ]; then
     echo "$1 requires a value" >&2
     exit 2
-  }
+  fi
 }
 
 while [ "$#" -gt 0 ]; do
