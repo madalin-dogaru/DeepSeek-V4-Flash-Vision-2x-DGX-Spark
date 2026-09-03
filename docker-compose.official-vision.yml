@@ -99,7 +99,7 @@ services:
         --enable-auto-tool-choice
         --reasoning-parser deepseek_v4
         --reasoning-config '{"reasoning_parser":"deepseek_v4","reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
-        --default-chat-template-kwargs '{"thinking":true,"reasoning_effort":"max"}'
+        --default-chat-template-kwargs '{"thinking":true,"reasoning_effort":"high"}'
         --generation-config vllm
         --no-enable-flashinfer-autotune
         --nnodes 2
