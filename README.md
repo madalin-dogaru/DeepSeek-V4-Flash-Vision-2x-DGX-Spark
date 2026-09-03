@@ -13,6 +13,12 @@ on two NVIDIA DGX Spark systems.
 This is a standalone OpenAI-compatible inference server. It has no dependency
 on NYX or any other agent harness.
 
+<p align="center">
+  <img src="assets/vllm-live-decode-monitor.png"
+       alt="Live vLLM decode speed and context monitor"
+       width="1000">
+</p>
+
 ## What this configuration provides
 
 - Native DeepSeek image understanding; no sidecar vision model.
