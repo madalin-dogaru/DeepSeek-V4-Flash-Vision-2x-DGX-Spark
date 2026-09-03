@@ -1,0 +1,246 @@
+From 0de27b12b819f540a8d83b93e97e90c18a070701 Mon Sep 17 00:00:00 2001
+From: Luca Motz <luca.motz@icloud.com>
+Date: Mon, 31 Aug 2026 22:53:19 +0200
+Subject: [PATCH 1/2] [Bugfix] Stream DeepSeek V4 Vision checkpoint weights
+
+Defer DeepSeek V4 fused-weight finalization to the model-level post-load hook so AutoWeightsLoader can consume interleaved Vision and language-model weights without sorting and retaining the full checkpoint in host memory.
+
+Co-authored-by: OpenAI Codex <codex@openai.com>
+Signed-off-by: Luca Motz <luca.motz@icloud.com>
+---
+ .../test_deepseek_v4_vl_weight_streaming.py   | 67 +++++++++++++++++++
+ vllm/models/deepseek_v4/nvidia/model.py       |  4 +-
+ vllm/models/deepseek_v4/nvidia/vl_model.py    | 16 +----
+ 3 files changed, 69 insertions(+), 18 deletions(-)
+ create mode 100644 tests/models/test_deepseek_v4_vl_weight_streaming.py
+
+diff --git a/tests/models/test_deepseek_v4_vl_weight_streaming.py b/tests/models/test_deepseek_v4_vl_weight_streaming.py
+new file mode 100644
+index 000000000000..429f057d73b6
+--- /dev/null
++++ b/tests/models/test_deepseek_v4_vl_weight_streaming.py
+@@ -0,0 +1,67 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from types import SimpleNamespace
++
++import torch
++from torch import nn
++
++from vllm.model_executor.models.utils import WeightsMapper
++from vllm.models.deepseek_v4.nvidia.model import DeepseekV4ForCausalLM
++from vllm.models.deepseek_v4.nvidia.vl_model import (
++    DeepseekV4ForConditionalGeneration,
++)
++
++
++class _FakeDeepseekV4Model(nn.Module):
++    def __init__(self) -> None:
++        super().__init__()
++        self.tensor_a = nn.Parameter(torch.zeros(1))
++        self.tensor_c = nn.Parameter(torch.zeros(1))
++        self.finalized_values: list[tuple[float, float]] = []
++        self.mhc_finalizations = 0
++
++    def finalize_mega_moe_weights(self) -> None:
++        self.finalized_values.append((self.tensor_a.item(), self.tensor_c.item()))
++
++    def finalize_mhc_broadcast_weights(self) -> None:
++        self.mhc_finalizations += 1
++
++
++def test_interleaved_vl_weights_stream_and_finalize_once_after_loading() -> None:
++    language_model = object.__new__(DeepseekV4ForCausalLM)
++    nn.Module.__init__(language_model)
++    language_model.config = SimpleNamespace(tie_word_embeddings=False)
++    language_model.model = _FakeDeepseekV4Model()
++    language_model.hf_to_vllm_mapper = WeightsMapper()
++
++    model = object.__new__(DeepseekV4ForConditionalGeneration)
++    nn.Module.__init__(model)
++    model.language_model = language_model
++    model.vision = nn.Module()
++    model.vision.tensor_b = nn.Parameter(torch.zeros(1))
++    model.hf_to_vllm_mapper = WeightsMapper()
++
++    def interleaved_weights():
++        yield "language_model.model.tensor_a", torch.tensor([1.0])
++        # A full-checkpoint sort would consume the generator before loading
++        # the first tensor. This assertion protects one-pass loading.
++        assert language_model.model.tensor_a.item() == 1.0
++        yield "vision.tensor_b", torch.tensor([2.0])
++        assert model.vision.tensor_b.item() == 2.0
++        yield "language_model.model.tensor_c", torch.tensor([3.0])
++
++    loaded = model.load_weights(interleaved_weights())
++
++    assert loaded == {
++        "language_model.model.tensor_a",
++        "vision.tensor_b",
++        "language_model.model.tensor_c",
++    }
++    assert language_model.model.finalized_values == []
++    assert language_model.model.mhc_finalizations == 0
++
++    model.process_weights_after_loading()
++
++    assert language_model.model.finalized_values == [(1.0, 3.0)]
++    assert language_model.model.mhc_finalizations == 1
+diff --git a/vllm/models/deepseek_v4/nvidia/model.py b/vllm/models/deepseek_v4/nvidia/model.py
+index 3247877db071..2b47170ba265 100644
+--- a/vllm/models/deepseek_v4/nvidia/model.py
++++ b/vllm/models/deepseek_v4/nvidia/model.py
+@@ -1841,9 +1841,7 @@ def get_mtp_target_hidden_states(self) -> torch.Tensor | None:
+ 
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+         loader = AutoWeightsLoader(self)
+-        loaded_params = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+-        self.process_weights_after_loading()
+-        return loaded_params
++        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+ 
+     def process_weights_after_loading(self) -> None:
+         self.model.finalize_mega_moe_weights()
+diff --git a/vllm/models/deepseek_v4/nvidia/vl_model.py b/vllm/models/deepseek_v4/nvidia/vl_model.py
+index bd40b7bce9e7..26ebe61f1b1e 100644
+--- a/vllm/models/deepseek_v4/nvidia/vl_model.py
++++ b/vllm/models/deepseek_v4/nvidia/vl_model.py
+@@ -312,22 +312,8 @@ def get_mtp_target_hidden_states(self) -> torch.Tensor | None:
+         return self.language_model.get_mtp_target_hidden_states()
+ 
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+-        # Map HF names into this wrapper's namespace up front and sort, so
+-        # the "language_model." group reaches the child loader as one
+-        # contiguous block (AutoWeightsLoader delegates per contiguous group,
+-        # and the child's load_weights finalizes fused expert weights, which
+-        # must not run on a partially loaded model).
+-        mapped = sorted(self.hf_to_vllm_mapper.apply(weights), key=lambda x: x[0])
+         loader = AutoWeightsLoader(self)
+-        loaded_params = loader.load_weights(mapped)
+-        # The child's load_weights already ran its post-load finalization.
+-        self._weights_finalized = True
+-        return loaded_params
++        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+ 
+     def process_weights_after_loading(self) -> None:
+-        # Model-level post-load hook (called by the loader after any load
+-        # format). Under DummyModelLoader the child's load_weights — and
+-        # hence its finalize step — is bypassed, so run it here instead.
+-        if getattr(self, "_weights_finalized", False):
+-            return
+         self.language_model.process_weights_after_loading()
+
+From a5f98b4ce2b926da08d6c13527d842d2410be21e Mon Sep 17 00:00:00 2001
+From: Luca Motz <luca.motz@icloud.com>
+Date: Mon, 31 Aug 2026 23:27:47 +0200
+Subject: [PATCH 2/2] [Bugfix] Use trained DSpark block size for DeepSeek V4
+
+Normalize the DeepSeek V4 DSpark draft from the checkpoint dspark_block_size rather than its generic MTP layer count, and reject absent or invalid trained block widths.
+
+Co-authored-by: OpenAI Codex <codex@openai.com>
+
+Signed-off-by: Luca Motz <luca.motz@icloud.com>
+---
+ .../test_speculative_draft_hf_overrides.py    | 25 +++++++++++++++++
+ vllm/config/speculative.py                    | 28 ++++++++++++++++---
+ vllm/models/deepseek_v4/nvidia/vl_model.py    |  4 +--
+ 3 files changed, 51 insertions(+), 6 deletions(-)
+
+diff --git a/tests/config/test_speculative_draft_hf_overrides.py b/tests/config/test_speculative_draft_hf_overrides.py
+index 8505172da387..b3ec1f741533 100644
+--- a/tests/config/test_speculative_draft_hf_overrides.py
++++ b/tests/config/test_speculative_draft_hf_overrides.py
+@@ -47,6 +47,31 @@ def test_none_overrides_fall_back_to_arch_mapping():
+     assert composed is SpeculativeConfig.hf_config_override
+ 
+ 
++@pytest.mark.cpu_test
++def test_deepseek_v4_dspark_uses_trained_block_size():
++    config = _make_hf_config(
++        architectures=["DeepSeekV4MTPModel"],
++        model_type="deepseek_mtp",
++        n_predict=3,
++        dspark_block_size=5,
++    )
++
++    SpeculativeConfig._normalize_deepseek_v4_dspark_hf_config(config)
++
++    assert config.model_type == "deepseek_v4"
++    assert config.architectures == ["DSparkDraftModel"]
++    assert config.n_predict == 5
++
++
++@pytest.mark.cpu_test
++@pytest.mark.parametrize("block_size", [None, 0, True])
++def test_deepseek_v4_dspark_rejects_invalid_block_size(block_size):
++    config = _make_hf_config(dspark_block_size=block_size)
++
++    with pytest.raises(ValueError, match="positive integer dspark_block_size"):
++        SpeculativeConfig._normalize_deepseek_v4_dspark_hf_config(config)
++
++
+ @pytest.mark.cpu_test
+ def test_callable_overrides_reach_the_draft_config():
+     """A callable override (config-to-config transform) composes with the
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index 92cf7c2ec39c..a6e209dba91d 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1060,6 +1060,27 @@ def compose_draft_hf_overrides(
+             SpeculativeConfig._apply_composed_hf_override, target_hf_overrides
+         )
+ 
++    @staticmethod
++    def _normalize_deepseek_v4_dspark_hf_config(
++        hf_config: PretrainedConfig,
++    ) -> None:
++        block_size = getattr(hf_config, "dspark_block_size", None)
++        if (
++            not isinstance(block_size, int)
++            or isinstance(block_size, bool)
++            or block_size <= 0
++        ):
++            raise ValueError(
++                "DeepSeek-V4 DSpark requires a positive integer "
++                "dspark_block_size in the checkpoint config."
++            )
++
++        hf_config.model_type = "deepseek_v4"
++        hf_config.architectures = ["DSparkDraftModel"]
++        # num_nextn_predict_layers describes the checkpoint's MTP depth;
++        # DSpark emits the separately trained block width per draft call.
++        hf_config.n_predict = block_size
++
+     @staticmethod
+     def _is_custom_proposer_path(model: str | None) -> bool:
+         """True if ``model`` is a dotted import path (e.g. ``pkg.MyProposer``)."""
+@@ -1380,10 +1401,9 @@ def __post_init__(self):
+                 ):
+                     # DeepSeek-V4 DSpark reuses the full DeepSeek-V4 config
+                     # and its weights ship in the target checkpoint.
+-                    self.draft_model_config.hf_config.model_type = "deepseek_v4"
+-                    self.draft_model_config.hf_config.architectures = [
+-                        "DSparkDraftModel"
+-                    ]
++                    SpeculativeConfig._normalize_deepseek_v4_dspark_hf_config(
++                        self.draft_model_config.hf_config
++                    )
+                     self.draft_model_config.quantization = (
+                         self.target_model_config.quantization
+                     )
+diff --git a/vllm/models/deepseek_v4/nvidia/vl_model.py b/vllm/models/deepseek_v4/nvidia/vl_model.py
+index 26ebe61f1b1e..d52f5044c169 100644
+--- a/vllm/models/deepseek_v4/nvidia/vl_model.py
++++ b/vllm/models/deepseek_v4/nvidia/vl_model.py
+@@ -72,8 +72,8 @@ def _make_deepseek_v4_vl_weights_mapper(
+         },
+         orig_to_new_substr={
+             ".shared_experts.w2": ".shared_experts.down_proj",
+-            # The MTP/DSpark draft heads are not supported for the vision
+-            # variant; drop their weights.
++            # Draft heads are loaded independently by the MTP/DSpark model;
++            # the target wrapper must not consume their weights.
+             "mtp.": None,
+         },
+     )

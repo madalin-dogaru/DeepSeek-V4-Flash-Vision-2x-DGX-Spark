@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-04
+
+- Advanced the serving layer to vLLM `1356635`, where native DeepSeek V4
+  Vision support is merged.
+- Added the checksum-pinned PR #54631 patch for one-pass Vision weight loading
+  and correct trained DSpark block width.
+- Added behavior-based image verification for both post-merge fixes.
+- Enabled the validated breakable CUDA graph path and persistent, versioned
+  Triton, TileLang, and TorchInductor caches.
+- Kept MTP3 after measured comparisons showed it outperforming MTP5 by about
+  12% on controlled and natural single-session decode.
+- Made image replication use the cluster interface, optional zstd streaming,
+  and exact image-ID verification.
+
 ## 2026-09-03
 
 - Fixed clean offline startup by propagating the immutable model revision to

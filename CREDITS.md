@@ -3,8 +3,9 @@
 This repository packages and documents work from several upstream projects:
 
 - DeepSeek: `deepseek-ai/DeepSeek-V4-Flash-Vision-Exp` model and reference code.
-- vLLM: official multimodal implementation in pull request #54566 and the
-  `deepseekv4-flash-vision` prerelease image.
+- vLLM: native multimodal implementation from merged pull request #54566,
+  post-merge loader/DSpark correction in pull request #54631, and the pinned
+  ARM64 wheel and base image.
 - FlashInfer: SM120/SM121 sparse-MLA implementation in pull request #4802.
 - MiaAI-Lab: two-node DGX Spark launch and operational groundwork.
 - Tony Deangelo: DGX Spark DeepSeek V4 NVFP4 recipe lineage.
@@ -18,6 +19,7 @@ Primary references:
 
 - https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
 - https://github.com/vllm-project/vllm/pull/54566
+- https://github.com/vllm-project/vllm/pull/54631
 - https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
 - https://github.com/flashinfer-ai/flashinfer/pull/4802
 - https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark

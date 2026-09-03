@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1.7
+
+ARG VLLM_BASE_IMAGE=local/deepseek-v4-flash-vision:base-vllm-5ab628dd1-fi-26fabfe-gb10
+FROM ${VLLM_BASE_IMAGE}
+
+ARG VLLM_COMMIT=1356635d837c4ef002ec98c1a0296e7ff60be3c1
+ARG VLLM_VERSION=0.28.1rc1.dev317+g1356635d8
+ARG VLLM_WHEEL_URL=https://wheels.vllm.ai/1356635d837c4ef002ec98c1a0296e7ff60be3c1/vllm-0.28.1rc1.dev317%2Bg1356635d8-cp38-abi3-manylinux_2_28_aarch64.whl
+ARG VLLM_WHEEL_SHA256=1928aee68356885d7eb696aa0ed226dfa537e00721c9c5376fafddc04490d198
+ARG VLLM_PATCH_COMMIT=a5f98b4ce2b926da08d6c13527d842d2410be21e
+ARG VLLM_PATCH_SHA256=4fecb840fcd985eeada0538202f920e9293d8ecb7ce9c0cb8337ed7703cff4d4
+ARG SOURCE_DATE_EPOCH=1788211667
+
+LABEL ai.dgx-spark.runtime="deepseek-v4-flash-vision-gb10"
+LABEL ai.dgx-spark.vllm.commit="${VLLM_COMMIT}"
+LABEL ai.dgx-spark.vllm.version="${VLLM_VERSION}"
+LABEL ai.dgx-spark.vllm.wheel.sha256="${VLLM_WHEEL_SHA256}"
+LABEL ai.dgx-spark.vllm.patch.pr54631="${VLLM_PATCH_COMMIT}"
+LABEL ai.dgx-spark.vllm.patch.pr54631.sha256="${VLLM_PATCH_SHA256}"
+
+ADD --checksum=sha256:${VLLM_WHEEL_SHA256} \
+    ${VLLM_WHEEL_URL} \
+    /tmp/vllm-0.28.1rc1.dev317+g1356635d8-cp38-abi3-manylinux_2_28_aarch64.whl
+
+# The wheel replaces vLLM only. The pinned PR fixes streaming Vision weight
+# loading and restores the checkpoint's trained DSpark block width. The proven
+# SM121 FlashInfer overlay remains intact and is verified after the build.
+RUN --mount=type=bind,source=patches/vllm-pr54631.patch,target=/tmp/vllm-pr54631.patch,readonly \
+    set -eux; \
+    uv pip install --system --no-deps --reinstall \
+      /tmp/vllm-0.28.1rc1.dev317+g1356635d8-cp38-abi3-manylinux_2_28_aarch64.whl; \
+    python3 -c 'import importlib.metadata as m; assert m.version("vllm") == "0.28.1rc1.dev317+g1356635d8"'; \
+    printf '%s  %s\n' "${VLLM_PATCH_SHA256}" /tmp/vllm-pr54631.patch | sha256sum -c -; \
+    awk ' \
+      /^From [0-9a-f]+ Mon / { emit = 0 } \
+      /^diff --git / { emit = ($0 ~ /^diff --git a\/vllm\//) } \
+      emit { print } \
+    ' /tmp/vllm-pr54631.patch > /tmp/vllm-pr54631-runtime.patch; \
+    test "$(grep -c '^diff --git ' /tmp/vllm-pr54631-runtime.patch)" -eq 4; \
+    patch --batch --forward -d /usr/local/lib/python3.12/dist-packages -p1 \
+      < /tmp/vllm-pr54631-runtime.patch; \
+    grep -q 'dspark_block_size' \
+      /usr/local/lib/python3.12/dist-packages/vllm/config/speculative.py; \
+    python3 -c 'from pathlib import Path; paths = [Path(p) for p in ("/usr/local/lib/python3.12/dist-packages/vllm/config/speculative.py", "/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v4/nvidia/model.py", "/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v4/nvidia/vl_model.py")]; [compile(p.read_text(), str(p), "exec") for p in paths]'; \
+    touch -d "@${SOURCE_DATE_EPOCH}" \
+      /usr/local/lib/python3.12/dist-packages/vllm/config/speculative.py \
+      /usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v4/nvidia/model.py \
+      /usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v4/nvidia/vl_model.py; \
+    set +e; check_output="$(uv pip check 2>&1)"; check_status=$?; set -e; \
+    printf '%s\n' "$check_output"; \
+    test "$check_status" -eq 1; \
+    test "$(printf '%s\n' "$check_output" | grep -c '^The package')" -eq 2; \
+    printf '%s\n' "$check_output" | grep -Fqx 'The package `nvidia-cusparselt-cu13` was built for a different platform'; \
+    printf '%s\n' "$check_output" | grep -Fqx 'The package `torch` requires `nvidia-nccl-cu13==2.29.7 ; sys_platform == '\''linux'\''`, but `2.30.7` is installed'; \
+    rm -f \
+      /tmp/vllm-0.28.1rc1.dev317+g1356635d8-cp38-abi3-manylinux_2_28_aarch64.whl \
+      /tmp/vllm-pr54631-runtime.patch

@@ -37,6 +37,9 @@ jobs:
       - name: Check Python syntax
         run: python3 -m py_compile scripts/*.py
 
+      - name: Verify runtime pins
+        run: python3 scripts/test-runtime-pins.py
+
       - name: Test Spark Studio registration helper
         run: python3 scripts/test-spark-studio-registration.py
 

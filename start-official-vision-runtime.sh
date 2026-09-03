@@ -6,7 +6,6 @@ SOURCE_ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env.dspark}"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.official-vision.yml"
 PROJECT_NAME="${PROJECT_NAME:-deepseek-v4-flash}"
 SERVICE_NAME="vllm-dspark"
-IMAGE="${OFFICIAL_VISION_IMAGE:-local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10}"
 WAIT_ATTEMPTS="${WAIT_ATTEMPTS:-120}"
 WAIT_SECONDS="${WAIT_SECONDS:-15}"
 
@@ -17,6 +16,8 @@ set -a
 # shellcheck disable=SC1090
 source "$SOURCE_ENV_FILE"
 set +a
+
+IMAGE="${OFFICIAL_VISION_IMAGE:-local/deepseek-v4-flash-vision:vllm-1356635-pr54631-fi-26fabfe-gb10}"
 
 : "${WORKER_HOST:?WORKER_HOST must be set}"
 : "${WORKER_SCRIPT_DIR:?WORKER_SCRIPT_DIR must be set}"
@@ -32,11 +33,26 @@ if [[ ! "$DSPARK_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 case "${OFFICIAL_MTP_NUM_TOKENS:-3}" in
-  3|6|9) ;;
-  *) echo "OFFICIAL_MTP_NUM_TOKENS must be 3, 6, or 9" >&2; exit 2 ;;
+  3|5) ;;
+  *) echo "OFFICIAL_MTP_NUM_TOKENS must be 3 or 5" >&2; exit 2 ;;
+esac
+case "${OFFICIAL_ADAPTIVE_VERIFICATION:-false}" in
+  true|false) ;;
+  *) echo "OFFICIAL_ADAPTIVE_VERIFICATION must be true or false" >&2; exit 2 ;;
+esac
+case "${VLLM_USE_BREAKABLE_CUDAGRAPH:-1}" in
+  0|1) ;;
+  *) echo "VLLM_USE_BREAKABLE_CUDAGRAPH must be 0 or 1" >&2; exit 2 ;;
 esac
 case "${OFFICIAL_MAX_MODEL_LEN:-1048576}" in
   ''|*[!0-9]*) echo "OFFICIAL_MAX_MODEL_LEN must be an integer" >&2; exit 2 ;;
+esac
+case "${VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN:-131072}" in
+  ''|*[!0-9]*) echo "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN must be an integer" >&2; exit 2 ;;
+esac
+case "${OFFICIAL_RUNTIME_CACHE_ROOT:-/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121}" in
+  /*) ;;
+  *) echo "OFFICIAL_RUNTIME_CACHE_ROOT must be an absolute container path" >&2; exit 2 ;;
 esac
 
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
@@ -54,16 +70,24 @@ if ssh "${ssh_opts[@]}" "$WORKER_HOST" \
   exit 2
 fi
 
-"$SCRIPT_DIR/scripts/verify-official-vision-image.sh" "$IMAGE"
+REQUIRE_ADAPTIVE_VERIFICATION="${OFFICIAL_ADAPTIVE_VERIFICATION:-false}" \
+  "$SCRIPT_DIR/scripts/verify-current-vision-image.sh" "$IMAGE"
+
+local_image_id="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
 # Expansion is intentionally local; both nodes must inspect the same tag.
 # shellcheck disable=SC2029
-ssh "${ssh_opts[@]}" "$WORKER_HOST" "docker image inspect '$IMAGE' >/dev/null"
+remote_image_id="$(ssh "${ssh_opts[@]}" "$WORKER_HOST" \
+  "docker image inspect '$IMAGE' --format '{{.Id}}'")"
+if [ "$local_image_id" != "$remote_image_id" ]; then
+  echo "image mismatch between head and worker: $local_image_id != $remote_image_id" >&2
+  exit 2
+fi
 
 scp "${ssh_opts[@]}" "$COMPOSE_FILE" \
   "$WORKER_HOST:$WORKER_SCRIPT_DIR/docker-compose.official-vision.yml"
 
 compose_head=(docker compose -p "$PROJECT_NAME" --env-file "$SOURCE_ENV_FILE" -f "$COMPOSE_FILE")
-worker_env="NODE_RANK=1 HEADLESS=1 VLLM_HOST_IP=$WORKER_VLLM_HOST_IP DSPARK_MODEL_OFFICIAL=$DSPARK_MODEL_OFFICIAL DSPARK_REVISION=$DSPARK_REVISION DSPARK_RESTART_POLICY=${DSPARK_RESTART_POLICY:-no}"
+worker_env="NODE_RANK=1 HEADLESS=1 VLLM_HOST_IP=$WORKER_VLLM_HOST_IP OFFICIAL_VISION_IMAGE=$OFFICIAL_VISION_IMAGE DSPARK_MODEL_OFFICIAL=$DSPARK_MODEL_OFFICIAL DSPARK_REVISION=$DSPARK_REVISION OFFICIAL_MAX_MODEL_LEN=$OFFICIAL_MAX_MODEL_LEN OFFICIAL_GPU_MEMORY_UTILIZATION=$OFFICIAL_GPU_MEMORY_UTILIZATION OFFICIAL_MTP_NUM_TOKENS=$OFFICIAL_MTP_NUM_TOKENS OFFICIAL_ADAPTIVE_VERIFICATION=${OFFICIAL_ADAPTIVE_VERIFICATION:-false} VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=${VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN:-131072} OFFICIAL_RUNTIME_CACHE_ROOT=${OFFICIAL_RUNTIME_CACHE_ROOT:-/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121} VLLM_USE_BREAKABLE_CUDAGRAPH=${VLLM_USE_BREAKABLE_CUDAGRAPH:-1} DSPARK_RESTART_POLICY=${DSPARK_RESTART_POLICY:-no}"
 worker_compose="docker compose -p '$PROJECT_NAME' --env-file .env.dspark -f docker-compose.official-vision.yml"
 
 NODE_RANK=0 HEADLESS='' VLLM_HOST_IP="$VLLM_HOST_IP" \

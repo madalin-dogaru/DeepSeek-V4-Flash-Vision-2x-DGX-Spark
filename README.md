@@ -23,9 +23,10 @@ on NYX or any other agent harness.
 - Coordinated recovery: a failed rank causes both ranks to stop and restart.
 - Pinned vLLM and FlashInfer sources instead of moving development branches.
 
-The recipe was validated on 2026-09-02. Both required upstream changes were
-still open at that time, so this repository intentionally pins known-good
-artifacts.
+The current recipe was validated on 2026-09-03. Native Vision support has
+merged into vLLM main, but its post-merge loader/DSpark correction and the
+required GB10 FlashInfer work are not both in a stable release. This repository
+therefore pins every moving artifact and verifies the fixes by behavior.
 
 ## Exact tested stack
 
@@ -40,12 +41,17 @@ artifacts.
 | Model revision | `e46e16bf6035c6f317eb2ac7458eb0362926d402` |
 | Model payload | 48 shards, 167,811,372,792 bytes (~157 GiB on disk) |
 | Official vLLM ARM64 image | `vllm/vllm-openai@sha256:8568b4bbc821903d93a0a9c17dd80382fdc0ba78eaa128e3eb5cb71c3bf06b79` |
-| vLLM inside image | `0.28.1rc1.dev137+g5ab628dd1` |
-| vLLM vision work | [vllm#54566](https://github.com/vllm-project/vllm/pull/54566) |
+| Base-image vLLM | `0.28.1rc1.dev137+g5ab628dd1` |
+| Serving vLLM | `0.28.1rc1.dev317+g1356635d8` |
+| vLLM commit | `1356635d837c4ef002ec98c1a0296e7ff60be3c1` |
+| vLLM wheel SHA-256 | `1928aee68356885d7eb696aa0ed226dfa537e00721c9c5376fafddc04490d198` |
+| Native Vision work | [vllm#54566](https://github.com/vllm-project/vllm/pull/54566), merged as `1356635` |
+| Loader and DSpark fix | [vllm#54631](https://github.com/vllm-project/vllm/pull/54631), pinned at `a5f98b4` |
+| PR #54631 patch SHA-256 | `4fecb840fcd985eeada0538202f920e9293d8ecb7ce9c0cb8337ed7703cff4d4` |
 | FlashInfer work | [flashinfer#4802](https://github.com/flashinfer-ai/flashinfer/pull/4802) |
 | FlashInfer commit | `26fabfe93ab7e866b1a3b581ca6ba2b984d49706` |
 | FlashInfer source archive SHA-256 | `e007f4611041cf4015224044fbe4b53a3074561626362accc542093c4757a5ad` |
-| Resulting local image tag | `local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10` |
+| Resulting local image tag | `local/deepseek-v4-flash-vision:vllm-1356635-pr54631-fi-26fabfe-gb10` |
 
 The public tag `vllm/vllm-openai:deepseekv4-flash-vision` is multi-platform
 and mutable. Its tested ARM64 manifest is the digest above. Do not replace the
@@ -78,13 +84,19 @@ from the model-loading and JIT path.
 The tested profile produced:
 
 - `max_model_len`: 1,048,576 tokens.
-- Shared KV capacity: 2,353,410 tokens / 22.58 GiB.
-- Reported full-window concurrency: 2.24x; this recipe still limits active
+- Shared KV capacity: 2,402,540 tokens / 23.62 GiB.
+- Reported full-window concurrency: 2.29x; this recipe still limits active
   sequences to one.
-- Five 1,200-token short-context runs: 52.71-57.55 decode tokens/s.
-- MTP acceptance during that test: 98.7%.
-- A real 262,043-token prompt completed with exact beginning/end recall.
-- Native vision, automatic tool calling, and worker-loss recovery passed.
+- Seven controlled 256-token runs: 51.8 decode tokens/s median
+  (45.3-56.4 tokens/s).
+- A natural 1,200-token high-reasoning run: 32.06 decode tokens/s after a
+  persistent-cache restart.
+- MTP3 accepted 84.0% of controlled draft tokens and 36.5% on the natural
+  reasoning workload. Acceptance is workload dependent.
+- A fresh 131,072-token prompt completed at 74.47 seconds TTFT after restart;
+  the earlier 262,043-token exact beginning/end recall gate also passed.
+- Native vision passed 8/8 shifted-cache probes; tool calling passed 7/7.
+- Coordinated worker-loss recovery passed.
 - Recovery after an intentional worker kill took about 498 seconds.
 - Each RoCE path sustained about 109 Gbit/s in `ib_write_bw`; both paths run
   concurrently sustained 196.09 Gbit/s aggregate.
@@ -96,10 +108,11 @@ The tested profile produced:
   tokens/s after enabling the second path. This change improves bulk
   collectives and transfer-heavy prefill/vision work, not steady decode.
 
-The 52-58 tokens/s figure is **not** a full 1M-occupied-context benchmark. The
-server allowed 1M while those prompts were short. Full-window decode speed has
-not been measured. There was no identical pre-change vision/prefill benchmark,
-so this validation does not claim a percentage improvement for vision TTFT.
+The decode figures are **not** full 1M-occupied-context benchmarks. The server
+allowed 1M while those prompts were shorter. Full-window decode speed has not
+been measured. The newer runtime matched the previous warmed 131K TTFT within
+measurement noise (70.37 versus 70.53 seconds), so no prefill-speed gain is
+claimed.
 
 ## Before installation
 
@@ -129,7 +142,7 @@ Container Toolkit rather than replacing them with unrelated packages.
 
 ```bash
 sudo apt update
-sudo apt install -y git curl jq rsync python3-venv rdma-core ibverbs-utils infiniband-diags
+sudo apt install -y git curl jq rsync zstd python3-venv rdma-core ibverbs-utils infiniband-diags
 sudo usermod -aG docker "$USER"
 ```
 
@@ -279,7 +292,10 @@ OFFICIAL_GPU_MEMORY_UTILIZATION=0.90
 OFFICIAL_MTP_NUM_TOKENS=3
 MAX_NUM_BATCHED_TOKENS=8192
 LONG_PREFILL_TOKEN_THRESHOLD=1024
-VLLM_USE_BREAKABLE_CUDAGRAPH=0
+OFFICIAL_RUNTIME_CACHE_ROOT=/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121
+OFFICIAL_ADAPTIVE_VERIFICATION=false
+VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=131072
+VLLM_USE_BREAKABLE_CUDAGRAPH=1
 DSPARK_RESTART_POLICY=no
 ```
 
@@ -377,7 +393,7 @@ Run from the repository on the head:
 ./build-official-vision-runtime.sh --sync-worker
 ```
 
-The build does four important things:
+The build does six important things:
 
 1. Uses the official vLLM Vision ARM64 image by immutable manifest digest.
 2. Downloads FlashInfer pull request #4802 at the pinned commit and verifies
@@ -385,14 +401,19 @@ The build does four important things:
 3. Replaces the complete FlashInfer Python/CUDA/header source surface.
 4. Removes the stock sparse-MLA AOT binary so the corrected SM121 source is
    JIT-compiled instead of being silently shadowed.
+5. Installs the checksum-pinned vLLM wheel containing merged native Vision
+   support, then applies the checksum-pinned PR #54631 loader/DSpark fix.
+6. Runs behavior checks for streamed weight loading and trained DSpark width,
+   not just version or label checks.
 
 The script verifies vLLM and FlashInfer contents, then streams the resulting
-image to the worker using `docker save | ssh ... docker load`.
+image to the worker over the cluster interface. It uses `zstd` when available
+and rejects the transfer unless both nodes report the same image ID.
 
 Verify both image IDs match:
 
 ```bash
-IMAGE=local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10
+IMAGE=local/deepseek-v4-flash-vision:vllm-1356635-pr54631-fi-26fabfe-gb10
 docker image inspect "$IMAGE" --format '{{.Id}}'
 ssh spark-b "docker image inspect '$IMAGE' --format '{{.Id}}'"
 ```
@@ -405,8 +426,8 @@ ssh spark-b "docker image inspect '$IMAGE' --format '{{.Id}}'"
 ROCE_PEER_IPS=10.100.32.2,10.100.33.2 ./scripts/verify-dual-roce.sh
 ```
 
-The first check renders both node commands and rejects accidental Qwen,
-legacy hotfix, wrong MTP, wrong context, or FlashInfer-autotune configuration.
+The first check renders both node commands and rejects a legacy Vision hotfix,
+wrong MTP, wrong context, or FlashInfer-autotune configuration.
 The second checks that stopping the supervisor terminates a startup process
 group and performs coordinated cleanup. The third proves that both configured
 RoCE paths are active at MTU 9000 and carry a full 8972-byte ping payload.
@@ -437,9 +458,9 @@ about eight minutes. Initial compilation can take longer.
 Healthy output should include values close to:
 
 ```text
-Available KV cache memory: 22.58 GiB
-GPU KV cache size: 2,353,410 tokens
-Maximum concurrency for 1,048,576 tokens per request: 2.24x
+Available KV cache memory: 23.62 GiB
+GPU KV cache size: 2,402,540 tokens
+Maximum concurrency for 1,048,576 tokens per request: 2.29x
 ```
 
 Check the API:
@@ -654,13 +675,17 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 
 | Symptom | Cause | Correct action |
 | --- | --- | --- |
-| Stable vLLM fails on hundreds of vision tensors | Vision support is not yet in a stable release | Use the pinned prerelease ARM64 image |
+| Stable vLLM fails on hundreds of vision tensors | The installed release predates native Vision support | Use the pinned wheel and patch built by this repository |
+| Model load exhausts host memory | The merged Vision loader sorts and retains the mapped checkpoint before TP sharding | Keep the pinned PR #54631 streaming-loader patch |
+| DSpark uses the wrong proposal width | Generic MTP layer count was used instead of the checkpoint's trained `dspark_block_size` | Keep PR #54631 and MTP3; the image verifier tests the internal width |
 | Sparse-MLA hangs or crashes on GB10 | Stock FlashInfer surface/AOT binary does not contain the required tested SM121 path | Build the repository overlay; do not merely copy one Python file |
 | Crash during FlashInfer crossover tuning | GB10 row-strided metadata can be routed into a dense-row prefill path | Keep `--no-enable-flashinfer-autotune` and the isolated workspace |
 | Machines become difficult to SSH into during load | DGX Spark unified memory is overcommitted | Keep utilization at `0.90`, stop other models, disable earlyoom |
 | One container restarts while the other waits forever | Tensor-parallel ranks were managed independently | Use `restart: no` and the coordinated supervisor |
 | NCCL uses only about half the expected link bandwidth | Only one of the QSFP port's two logical RoCE devices is configured, or MTU remains 1500 | Configure both subnets at MTU 9000, list both devices in `NCCL_IB_HCA`, and run `verify-dual-roce.sh` |
 | First boot appears frozen | 48 model shards plus FlashInfer/Triton JIT compilation | Watch both logs and wait while both containers remain alive |
+| Every restart repeats avoidable compiler work | Triton, TileLang, or TorchInductor caches are not host-persistent or share an incompatible namespace | Keep the versioned `OFFICIAL_RUNTIME_CACHE_ROOT` on the mounted cache |
+| Adaptive DSpark verification fails on GB10 | The current DeepSeek V4 indexer cannot handle the required device/CPU length mismatch | Keep `OFFICIAL_ADAPTIVE_VERIFICATION=false`; the verifier rejects unsupported use |
 | Fresh offline boot reports `LocalEntryNotFoundError` despite a complete pinned snapshot | An older recipe did not propagate the pinned revision to the container and MTP loader | Update the recipe; do not fabricate `refs/main` or disable offline mode |
 | Short answer is empty or ends at the token limit | Reasoning consumed `max_tokens` | Raise `max_tokens` or request lower/off reasoning |
 | Local image path is rejected | No host path was granted to vLLM | Use base64/HTTP, or deliberately add a read-only mount and `--allowed-local-media-path` |
@@ -669,13 +694,19 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 
 ## Why these non-default choices matter
 
-- **MTP3:** it is the depth published for this Vision checkpoint and the tested
-  GB10 setting. Do not copy MTP6 from older text-only 0731 recipes.
+- **MTP3:** it is the measured single-session winner. MTP5 was 12.4% slower on
+  controlled decode and 12.7% slower on a natural high-reasoning workload
+  because its fourth and fifth draft positions were rarely accepted.
 - **Adaptive verification off:** this is the exact GB10 configuration validated
   here. The official GB200 example enables it, but that is a different hardware
   and kernel path.
 - **FlashInfer autotune off:** this avoids a verified GB10 crossover-routing
   failure. Skipping only the FP4 MoE tuning op is not equivalent.
+- **Breakable CUDA graphs on:** this is the supported graph path in the pinned
+  vLLM build. Generic capture sizes remain 1, 2, and 4; they are batch shapes,
+  not MTP depth.
+- **Versioned compiler caches:** they reduce repeated startup work without
+  reusing generated binaries across incompatible runtime versions.
 - **One sequence:** this deployment is optimized for one interactive agent,
   not aggregate multi-user throughput.
 - **FP8 KV:** this leaves enough KV capacity for the 1M ceiling while preserving
@@ -688,12 +719,14 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 
 ## Updating safely
 
-As of 2026-09-02:
+As of 2026-09-03:
 
-- vLLM vision pull request #54566 was open.
+- vLLM Vision pull request #54566 was merged as commit `1356635`.
+- Post-merge loader and DSpark pull request #54631 was open at `a5f98b4`.
 - FlashInfer pull request #4802 was open.
-- The vLLM PR branch had advanced beyond the commit in the published ARM64
-  image, while the image manifest still resolved to the tested digest.
+- The public ARM64 image remains the digest-pinned base. This recipe installs
+  the pinned post-merge wheel and patch as explicit, independently verified
+  layers.
 
 Do not update the model revision, vLLM base, and FlashInfer overlay together.
 Create a new image tag and validate one layer at a time:
@@ -705,15 +738,16 @@ Create a new image tag and validate one layer at a time:
 5. Kill the worker container once and prove coordinated recovery.
 6. Only then replace the production image tag.
 
-When both PRs land in a stable vLLM/FlashInfer release, prefer the stable image
-after it passes the same gates. Until then, the pins in this repository are the
-known-good rollback point.
+When PR #54631 and the FlashInfer work land in a stable release, prefer the
+stable image only after it passes the same gates. Until then, the pins in this
+repository are the known-good rollback point.
 
 ## Upstream references
 
 - [DeepSeek model card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp)
 - [Official vLLM model recipe](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp)
 - [vLLM native vision PR #54566](https://github.com/vllm-project/vllm/pull/54566)
+- [vLLM streaming loader and DSpark fix #54631](https://github.com/vllm-project/vllm/pull/54631)
 - [FlashInfer SM120/SM121 sparse-MLA PR #4802](https://github.com/flashinfer-ai/flashinfer/pull/4802)
 - [NVIDIA ConnectX-7 clustering guide](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
 - [NVIDIA multi-Spark NCCL validation](https://build.nvidia.com/spark/nccl/overview)

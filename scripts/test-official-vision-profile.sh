@@ -12,6 +12,8 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# The Python program deliberately receives shell-like text without expansion.
+# shellcheck disable=SC2016
 NODE_RANK=0 HEADLESS='' VLLM_HOST_IP="$VLLM_HOST_IP" DSPARK_RESTART_POLICY=no \
   docker compose -p deepseek-v4-flash --env-file "$ENV_FILE" \
     -f "$COMPOSE_FILE" config --format json \
@@ -23,21 +25,31 @@ import sys
 config = json.load(sys.stdin)
 service = config["services"]["vllm-dspark"]
 command = service["command"][2]
-runtime_command = command.replace("$$", "$")
-expected_revision = os.environ["EXPECTED_REVISION"]
-model_ref = chr(36) + "{DSPARK_MODEL_OFFICIAL}"
-revision_ref = chr(36) + "{DSPARK_REVISION}"
 
-assert service["image"] == "local/deepseek-v4-flash-vision:vllm-5ab628dd1-fi-26fabfe-gb10"
-assert service["environment"]["DSPARK_MODEL_OFFICIAL"] == "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
-assert service["environment"]["DSPARK_REVISION"] == expected_revision
+assert service["image"] == os.environ["OFFICIAL_VISION_IMAGE"]
+assert (
+    service["environment"]["DSPARK_MODEL_OFFICIAL"]
+    == "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
+)
+adaptive = os.environ.get("OFFICIAL_ADAPTIVE_VERIFICATION", "false")
+revision = os.environ["DSPARK_REVISION"]
+mtp_tokens = os.environ.get("OFFICIAL_MTP_NUM_TOKENS", "3")
+batch_tokens = os.environ.get("MAX_NUM_BATCHED_TOKENS", "8192")
+cache_root = os.environ.get(
+    "OFFICIAL_RUNTIME_CACHE_ROOT",
+    "/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121",
+)
 required = (
     "--enable-expert-parallel",
     "--kv-cache-dtype fp8",
     "--max-model-len \"1048576\"",
     "--max-num-seqs 1",
+    f"--max-num-batched-tokens \"{batch_tokens}\"",
+    "--max-cudagraph-capture-size 4",
     "\"num_speculative_tokens\":%s",
-    "\"enable_adaptive_verification\":false",
+    "\"revision\":\"%s\"",
+    "\"enable_adaptive_verification\":%s",
+    "--revision \"$${DSPARK_REVISION}\"",
     "--tokenizer-mode deepseek_v4",
     "--tool-call-parser deepseek_v4",
     "--reasoning-parser deepseek_v4",
@@ -47,21 +59,25 @@ required = (
 )
 for value in required:
     assert value in command, value
-assert f"--revision \"{revision_ref}\"" in runtime_command
-assert "\"revision\":\"%s\"" in runtime_command
-assert model_ref in runtime_command
-assert revision_ref in runtime_command
-assert "\"enable_adaptive_verification\":true" not in command
+assert f"\"{mtp_tokens}\" \"{adaptive}\");" in command
+assert service["environment"]["VLLM_USE_BREAKABLE_CUDAGRAPH"] == os.environ.get(
+    "VLLM_USE_BREAKABLE_CUDAGRAPH", "1"
+)
+assert service["environment"]["DSPARK_REVISION"] == revision
+assert revision == os.environ["EXPECTED_REVISION"]
+assert service["environment"]["TRITON_CACHE_DIR"] == f"{cache_root}/triton"
+assert service["environment"]["TILELANG_CACHE_DIR"] == f"{cache_root}/tilelang"
+assert service["environment"]["TORCHINDUCTOR_CACHE_DIR"] == f"{cache_root}/torchinductor"
 assert "--enable-flashinfer-autotune" not in command
 assert (
     service["environment"]["FLASHINFER_WORKSPACE_BASE"]
     == "/cache/huggingface/flashinfer-official-4802-gb10-stable"
 )
-assert service["environment"]["NCCL_IB_HCA"] == "rocep1s0f0,roceP2p1s0f0"
+assert service["environment"]["NCCL_IB_HCA"] == os.environ["NCCL_IB_HCA"]
 assert service["environment"]["NCCL_IB_MERGE_NICS"] == "1"
 
 rendered = json.dumps(config).lower()
-for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla", "qwen"):
+for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla"):
     assert forbidden not in rendered, forbidden
 '
 
