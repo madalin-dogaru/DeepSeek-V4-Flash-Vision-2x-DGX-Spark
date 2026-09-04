@@ -83,7 +83,7 @@ assert "/dev/tcp/" in worker_health
 assert "MASTER_ADDR" in worker_health
 assert "MASTER_PORT" in worker_health
 assert "then exit 0" not in worker_health
-assert "--gpu-memory-utilization \"0.82\"" in command
+assert "--gpu-memory-utilization \"0.80\"" in command
 
 rendered = json.dumps(config).lower()
 for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla"):

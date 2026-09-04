@@ -90,8 +90,8 @@ from the model-loading and JIT path.
 The tested profile produced:
 
 - `max_model_len`: 1,048,576 tokens.
-- Shared KV capacity: 1,358,634 tokens / 13.84 GiB.
-- Reported full-window concurrency: 1.30x; this recipe still limits active
+- Shared KV capacity: 1,219,414 tokens / 11.97 GiB.
+- Reported full-window concurrency: 1.16x; this recipe still limits active
   sequences to one.
 - Seven controlled 256-token runs: 51.8 decode tokens/s median
   (45.3-56.4 tokens/s).
@@ -294,7 +294,7 @@ change these tested serving values for the first boot:
 ```env
 DSPARK_REVISION=e46e16bf6035c6f317eb2ac7458eb0362926d402
 OFFICIAL_MAX_MODEL_LEN=1048576
-OFFICIAL_GPU_MEMORY_UTILIZATION=0.82
+OFFICIAL_GPU_MEMORY_UTILIZATION=0.80
 OFFICIAL_MTP_NUM_TOKENS=3
 MAX_NUM_BATCHED_TOKENS=8192
 LONG_PREFILL_TOKEN_THRESHOLD=1024
@@ -467,9 +467,9 @@ about eight minutes. Initial compilation can take longer.
 Healthy output should include values close to:
 
 ```text
-Available KV cache memory: 13.84 GiB
-GPU KV cache size: 1,358,634 tokens
-Maximum concurrency for 1,048,576 tokens per request: 1.30x
+Available KV cache memory: 11.97 GiB
+GPU KV cache size: 1,219,414 tokens
+Maximum concurrency for 1,048,576 tokens per request: 1.16x
 ```
 
 Check the API:
@@ -689,7 +689,7 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 | DSpark uses the wrong proposal width | Generic MTP layer count was used instead of the checkpoint's trained `dspark_block_size` | Keep PR #54631 and MTP3; the image verifier tests the internal width |
 | Sparse-MLA hangs or crashes on GB10 | Stock FlashInfer surface/AOT binary does not contain the required tested SM121 path | Build the repository overlay; do not merely copy one Python file |
 | Crash during FlashInfer crossover tuning | GB10 row-strided metadata can be routed into a dense-row prefill path | Keep `--no-enable-flashinfer-autotune` and the isolated workspace |
-| Machines become difficult to SSH into during load | DGX Spark unified memory is overcommitted | Keep utilization at `0.82`, stop other models, disable earlyoom |
+| Machines become difficult to SSH into during load | DGX Spark unified memory is overcommitted | Keep utilization at `0.80`, stop other models, disable earlyoom |
 | One container restarts while the other waits forever | Tensor-parallel ranks were managed independently | Use `restart: no` and the coordinated supervisor |
 | Head boots before the worker is reachable | Startup queried stale-container state through a failed SSH connection | Use the current launcher, which waits for SSH plus Docker and rejects failed remote state queries |
 | NCCL uses only about half the expected link bandwidth | Only one of the QSFP port's two logical RoCE devices is configured, or MTU remains 1500 | Configure both subnets at MTU 9000, list both devices in `NCCL_IB_HCA`, and run `verify-dual-roce.sh` |

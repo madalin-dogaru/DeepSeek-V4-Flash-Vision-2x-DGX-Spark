@@ -92,7 +92,7 @@ services:
         --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-8192}"
         --long-prefill-token-threshold "${LONG_PREFILL_TOKEN_THRESHOLD:-1024}"
         --max-cudagraph-capture-size 4
-        --gpu-memory-utilization "${OFFICIAL_GPU_MEMORY_UTILIZATION:-0.82}"
+        --gpu-memory-utilization "${OFFICIAL_GPU_MEMORY_UTILIZATION:-0.80}"
         --enable-prefix-caching
         --enable-prompt-tokens-details
         --async-scheduling

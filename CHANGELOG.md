@@ -2,7 +2,7 @@
 
 ## 2026-09-04
 
-- Reduced the default GPU memory reservation from `0.90` to `0.82`. The 1M
+- Reduced the default GPU memory reservation from `0.90` to `0.80`. The 1M
   request ceiling remains unchanged, while the two unified-memory hosts retain
   enough headroom for transient CUDA, vision, and operating-system allocations.
 - Made cluster startup wait for worker SSH and Docker explicitly. Transport or
