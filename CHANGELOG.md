@@ -2,6 +2,14 @@
 
 ## 2026-09-04
 
+- Reduced the default GPU memory reservation from `0.90` to `0.82`. The 1M
+  request ceiling remains unchanged, while the two unified-memory hosts retain
+  enough headroom for transient CUDA, vision, and operating-system allocations.
+- Made cluster startup wait for worker SSH and Docker explicitly. Transport or
+  daemon failures can no longer be mistaken for confirmation that no stale
+  worker container exists.
+- Made the worker container health check verify connectivity to the distributed
+  master instead of returning healthy unconditionally.
 - Advanced the serving layer to vLLM `1356635`, where native DeepSeek V4
   Vision support is merged.
 - Added the checksum-pinned PR #54631 patch for one-pass Vision weight loading

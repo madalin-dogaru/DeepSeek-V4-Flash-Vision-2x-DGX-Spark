@@ -8,6 +8,8 @@ PROJECT_NAME="${PROJECT_NAME:-deepseek-v4-flash}"
 SERVICE_NAME="vllm-dspark"
 WAIT_ATTEMPTS="${WAIT_ATTEMPTS:-120}"
 WAIT_SECONDS="${WAIT_SECONDS:-15}"
+WORKER_READY_ATTEMPTS="${WORKER_READY_ATTEMPTS:-60}"
+WORKER_READY_SECONDS="${WORKER_READY_SECONDS:-2}"
 
 [ -f "$SOURCE_ENV_FILE" ] || { echo "missing environment file: $SOURCE_ENV_FILE" >&2; exit 2; }
 [ -f "$COMPOSE_FILE" ] || { echo "missing compose file: $COMPOSE_FILE" >&2; exit 2; }
@@ -47,6 +49,12 @@ esac
 case "${OFFICIAL_MAX_MODEL_LEN:-1048576}" in
   ''|*[!0-9]*) echo "OFFICIAL_MAX_MODEL_LEN must be an integer" >&2; exit 2 ;;
 esac
+case "$WORKER_READY_ATTEMPTS:$WORKER_READY_SECONDS" in
+  *[!0-9:]*|0:*|*:0)
+    echo "WORKER_READY_ATTEMPTS and WORKER_READY_SECONDS must be positive integers" >&2
+    exit 2
+    ;;
+esac
 case "${VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN:-131072}" in
   ''|*[!0-9]*) echo "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN must be an integer" >&2; exit 2 ;;
 esac
@@ -58,14 +66,32 @@ esac
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
 container_name="${PROJECT_NAME}-${SERVICE_NAME}-1"
 
+worker_ready=false
+for _ in $(seq 1 "$WORKER_READY_ATTEMPTS"); do
+  if ssh "${ssh_opts[@]}" "$WORKER_HOST" \
+    "docker info >/dev/null 2>&1" >/dev/null 2>&1; then
+    worker_ready=true
+    break
+  fi
+  sleep "$WORKER_READY_SECONDS"
+done
+if [ "$worker_ready" != true ]; then
+  echo "worker $WORKER_HOST did not become ready over SSH with Docker available" >&2
+  exit 1
+fi
+
 if docker ps -q --filter "name=^/${container_name}$" | grep -q .; then
   echo "refusing to replace the running head container; stop the cluster first" >&2
   exit 2
 fi
 # Expansion is intentionally local; the worker receives the resolved name.
 # shellcheck disable=SC2029
-if ssh "${ssh_opts[@]}" "$WORKER_HOST" \
-  "docker ps -q --filter 'name=^/${container_name}\$' | grep -q ."; then
+if ! worker_container_id="$(ssh "${ssh_opts[@]}" "$WORKER_HOST" \
+  "docker ps -q --filter 'name=^/${container_name}\$'")"; then
+  echo "failed to query worker container state on $WORKER_HOST" >&2
+  exit 1
+fi
+if [ -n "$worker_container_id" ]; then
   echo "refusing to replace the running worker container; stop the cluster first" >&2
   exit 2
 fi

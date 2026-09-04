@@ -75,6 +75,15 @@ assert (
 )
 assert service["environment"]["NCCL_IB_HCA"] == os.environ["NCCL_IB_HCA"]
 assert service["environment"]["NCCL_IB_MERGE_NICS"] == "1"
+assert service["environment"]["MASTER_ADDR"] == os.environ["MASTER_ADDR"]
+assert service["environment"]["MASTER_PORT"] == os.environ.get("MASTER_PORT", "25000")
+assert service["healthcheck"]["test"][0] == "CMD-SHELL"
+worker_health = service["healthcheck"]["test"][1]
+assert "/dev/tcp/" in worker_health
+assert "MASTER_ADDR" in worker_health
+assert "MASTER_PORT" in worker_health
+assert "then exit 0" not in worker_health
+assert "--gpu-memory-utilization \"0.82\"" in command
 
 rendered = json.dumps(config).lower()
 for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla"):
@@ -113,6 +122,7 @@ assert command.rstrip().endswith("--headless")
 assert service["environment"]["VLLM_HOST_IP"] == "'"$WORKER_VLLM_HOST_IP"'"
 assert service["environment"]["HEADLESS"] == "1"
 assert service["environment"]["DSPARK_REVISION"] == os.environ["EXPECTED_REVISION"]
+assert service["environment"]["MASTER_ADDR"] == os.environ["MASTER_ADDR"]
 '
 
 echo "Official DeepSeek Vision compose profile verified."

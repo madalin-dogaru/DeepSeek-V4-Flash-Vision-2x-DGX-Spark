@@ -17,11 +17,22 @@ esac
 
 docker image inspect "$IMAGE" >/dev/null
 
+label_value() {
+  local suffix="$1" value
+  value="$(docker image inspect "$IMAGE" \
+    --format "{{index .Config.Labels \"ai.dgx-spark.${suffix}\"}}")"
+  if [ -z "$value" ]; then
+    value="$(docker image inspect "$IMAGE" \
+      --format "{{index .Config.Labels \"ai.nyx.${suffix}\"}}")"
+  fi
+  printf '%s' "$value"
+}
+
 test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "arm64"
-test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.dgx-spark.vllm.commit"}}')" = "$EXPECTED_VLLM_COMMIT"
-test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.dgx-spark.flashinfer.commit"}}')" = "$EXPECTED_FLASHINFER_COMMIT"
-test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.dgx-spark.vllm.patch.pr54631"}}')" = "$EXPECTED_VLLM_PATCH_COMMIT"
-test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.dgx-spark.vllm.patch.pr54631.sha256"}}')" = "$EXPECTED_VLLM_PATCH_SHA256"
+test "$(label_value vllm.commit)" = "$EXPECTED_VLLM_COMMIT"
+test "$(label_value flashinfer.commit)" = "$EXPECTED_FLASHINFER_COMMIT"
+test "$(label_value vllm.patch.pr54631)" = "$EXPECTED_VLLM_PATCH_COMMIT"
+test "$(label_value vllm.patch.pr54631.sha256)" = "$EXPECTED_VLLM_PATCH_SHA256"
 
 docker run --rm \
   --env "EXPECTED_VLLM_VERSION=$EXPECTED_VLLM_VERSION" \
