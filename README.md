@@ -25,6 +25,10 @@ on NYX or any other agent harness.
 - Tensor parallelism across two GB10 systems (`TP=2`) over ConnectX-7/RoCE.
 - One interactive sequence with a 1,048,576-token per-request ceiling.
 - FP8 KV cache, FP4/FP8 checkpoint weights, expert parallelism, and MTP3.
+- Long-turn prefix reuse for the hybrid MLA/SWA cache instead of re-prefilling
+  the unchanged conversation on every request.
+- A bounded boot sweep for text, sampling, long-prefill, and 1920x1080 vision
+  request shapes before the endpoint is announced as ready.
 - Tool-call and reasoning parsers for the DeepSeek V4 wire format.
 - Coordinated recovery: a failed rank causes both ranks to stop and restart.
 - Pinned vLLM and FlashInfer sources instead of moving development branches.
@@ -90,8 +94,8 @@ from the model-loading and JIT path.
 The tested profile produced:
 
 - `max_model_len`: 1,048,576 tokens.
-- Shared KV capacity: 1,219,414 tokens / 11.97 GiB.
-- Reported full-window concurrency: 1.16x; this recipe still limits active
+- Shared KV capacity: 1,156,663 tokens / 11.1 GiB.
+- Reported full-window concurrency: 1.10x; this recipe still limits active
   sequences to one.
 - Seven controlled 256-token runs: 51.8 decode tokens/s median
   (45.3-56.4 tokens/s).
@@ -99,8 +103,13 @@ The tested profile produced:
   persistent-cache restart.
 - MTP3 accepted 84.0% of controlled draft tokens and 36.5% on the natural
   reasoning workload. Acceptance is workload dependent.
-- A fresh 131,072-token prompt completed at 74.47 seconds TTFT after restart;
-  the earlier 262,043-token exact beginning/end recall gate also passed.
+- A fresh 128,020-token prompt completed in 67.21 seconds after restart;
+  appending a small turn reused 126,976 of 128,036 prompt tokens and completed
+  in 1.06 seconds. Without the retention interval, the same follow-up repeated
+  the full prefill in about 66 seconds with zero cache hits.
+- The automatic post-start sweep completed all 15 text and native-vision
+  requests in 31 seconds on the measured pair.
+- The earlier 262,043-token exact beginning/end recall gate also passed.
 - Native vision passed 8/8 shifted-cache probes; tool calling passed 7/7.
 - Coordinated worker-loss recovery passed.
 - Recovery after an intentional worker kill took about 498 seconds.
@@ -298,10 +307,13 @@ OFFICIAL_GPU_MEMORY_UTILIZATION=0.80
 OFFICIAL_MTP_NUM_TOKENS=3
 MAX_NUM_BATCHED_TOKENS=8192
 LONG_PREFILL_TOKEN_THRESHOLD=1024
+VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096
 OFFICIAL_RUNTIME_CACHE_ROOT=/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121
 OFFICIAL_ADAPTIVE_VERIFICATION=false
 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=131072
 VLLM_USE_BREAKABLE_CUDAGRAPH=1
+DSPARK_BOOT_SHAPE_WARMUP=1
+DSPARK_WARMUP_REQ_TIMEOUT=240
 DSPARK_RESTART_POLICY=no
 ```
 
@@ -451,7 +463,10 @@ worker. Then run on the head:
 ```
 
 The worker starts first in headless mode, followed by the head/API rank. The
-launcher waits up to 30 minutes for health.
+launcher waits up to 30 minutes for health, then runs a bounded 15-request
+shape sweep. The endpoint is announced as ready after the sweep. A sweep
+failure is visible but non-fatal; it means a missed kernel shape may compile on
+its first real request, not that the model failed to load.
 
 Monitor both ranks in separate terminals:
 
@@ -462,14 +477,15 @@ ssh spark-b 'docker logs -f deepseek-v4-flash-vllm-dspark-1'
 
 Do not assume the first FlashInfer JIT is a hang. Wait while both ranks are
 alive and logs continue to advance. A warm recovery on the tested pair took
-about eight minutes. Initial compilation can take longer.
+about eight minutes. Initial compilation can take longer. The boot sweep adds
+about 30 seconds on a warm cache and prints progress for every request shape.
 
 Healthy output should include values close to:
 
 ```text
-Available KV cache memory: 11.97 GiB
-GPU KV cache size: 1,219,414 tokens
-Maximum concurrency for 1,048,576 tokens per request: 1.16x
+Available KV cache memory: 11.1 GiB
+GPU KV cache size: 1,156,663 tokens
+Maximum concurrency for 1,048,576 tokens per request: 1.10x
 ```
 
 Check the API:
@@ -695,6 +711,9 @@ and `url`; `base_url` is not accepted by that registration endpoint.
 | NCCL uses only about half the expected link bandwidth | Only one of the QSFP port's two logical RoCE devices is configured, or MTU remains 1500 | Configure both subnets at MTU 9000, list both devices in `NCCL_IB_HCA`, and run `verify-dual-roce.sh` |
 | First boot appears frozen | 48 model shards plus FlashInfer/Triton JIT compilation | Watch both logs and wait while both containers remain alive |
 | Every restart repeats avoidable compiler work | Triton, TileLang, or TorchInductor caches are not host-persistent or share an incompatible namespace | Keep the versioned `OFFICIAL_RUNTIME_CACHE_ROOT` on the mounted cache |
+| Every appended turn repeats the full long-context prefill | Hybrid MLA/SWA prefix checkpoints are not retained even though `--enable-prefix-caching` is set | Keep `VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096` on both ranks and keep conversation history append-only between compactions |
+| A 16K prefill batch cannot preserve the 1M window | At `0.80` utilization the tested run exposed only 9.13 GiB KV while 16.27 GiB was required | Keep the validated 8K batch; do not trade host stability for a larger chunk |
+| Worker kernel log shows `NV_ERR_NO_MEMORY` during startup but the engine continues | Vision profiling and graph capture probe transient allocations near the unified-memory boundary | Accept only when both ranks finish capture, report at least the documented KV capacity, and pass health; otherwise stop and lower memory utilization |
 | Adaptive DSpark verification fails on GB10 | The current DeepSeek V4 indexer cannot handle the required device/CPU length mismatch | Keep `OFFICIAL_ADAPTIVE_VERIFICATION=false`; the verifier rejects unsupported use |
 | Fresh offline boot reports `LocalEntryNotFoundError` despite a complete pinned snapshot | An older recipe did not propagate the pinned revision to the container and MTP loader | Update the recipe; do not fabricate `refs/main` or disable offline mode |
 | Short answer is empty or ends at the token limit | Reasoning consumed `max_tokens` | Raise `max_tokens` or request lower/off reasoning |
@@ -717,6 +736,16 @@ and `url`; `base_url` is not accepted by that registration endpoint.
   not MTP depth.
 - **Versioned compiler caches:** they reduce repeated startup work without
   reusing generated binaries across incompatible runtime versions.
+- **Prefix retention at 4K:** `--enable-prefix-caching` alone did not preserve
+  completed hybrid MLA/SWA prefixes. The 4,096-token checkpoint interval
+  converted a representative 128K appended turn from a 66-second full prefill
+  to a 1.06-second request with about 99.2% of prompt tokens reused.
+- **8K prefill batches:** a controlled 16K launch failed the 1M KV-capacity
+  check before serving. The recipe keeps 8K because it is the largest validated
+  setting that preserves both the 1M ceiling and operating-system headroom.
+- **Automatic shape warmup:** the sweep covers speculative decode buckets,
+  default and sampled generation, the configured prefill boundary, thinking
+  on/off, and one generated 1920x1080 image. It does not send external data.
 - **One sequence:** this deployment is optimized for one interactive agent,
   not aggregate multi-user throughput.
 - **FP8 KV:** this leaves enough KV capacity for the 1M ceiling while preserving

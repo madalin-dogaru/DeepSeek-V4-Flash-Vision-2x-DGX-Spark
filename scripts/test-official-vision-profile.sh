@@ -63,6 +63,9 @@ assert f"\"{mtp_tokens}\" \"{adaptive}\");" in command
 assert service["environment"]["VLLM_USE_BREAKABLE_CUDAGRAPH"] == os.environ.get(
     "VLLM_USE_BREAKABLE_CUDAGRAPH", "1"
 )
+assert service["environment"]["VLLM_PREFIX_CACHE_RETENTION_INTERVAL"] == os.environ.get(
+    "VLLM_PREFIX_CACHE_RETENTION_INTERVAL", "4096"
+)
 assert service["environment"]["DSPARK_REVISION"] == revision
 assert revision == os.environ["EXPECTED_REVISION"]
 assert service["environment"]["TRITON_CACHE_DIR"] == f"{cache_root}/triton"
@@ -86,9 +89,18 @@ assert "then exit 0" not in worker_health
 assert "--gpu-memory-utilization \"0.80\"" in command
 
 rendered = json.dumps(config).lower()
-for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla"):
+for forbidden in ("hotfix-dsv4-vision-exp", "nvfp4_ds_mla", "qwen"):
     assert forbidden not in rendered, forbidden
 '
+
+grep -q 'MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}' \
+  "$SCRIPT_DIR/start-official-vision-runtime.sh"
+grep -q 'LONG_PREFILL_TOKEN_THRESHOLD=${LONG_PREFILL_TOKEN_THRESHOLD:-1024}' \
+  "$SCRIPT_DIR/start-official-vision-runtime.sh"
+grep -q 'VLLM_PREFIX_CACHE_RETENTION_INTERVAL=${VLLM_PREFIX_CACHE_RETENTION_INTERVAL:-4096}' \
+  "$SCRIPT_DIR/start-official-vision-runtime.sh"
+grep -q 'DSPARK_WARMUP_VISION=1' "$SCRIPT_DIR/start-official-vision-runtime.sh"
+grep -q 'DSPARK_WARMUP_BATCH_TOKENS=' "$SCRIPT_DIR/start-official-vision-runtime.sh"
 
 missing_revision_env="$(mktemp)"
 trap 'rm -f "$missing_revision_env"' EXIT

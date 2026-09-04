@@ -2,6 +2,17 @@
 
 ## 2026-09-04
 
+- Preserved hybrid MLA/SWA prefix checkpoints every 4,096 tokens. A measured
+  128K appended turn now reuses 126,976 prompt tokens and completes in 1.06
+  seconds instead of repeating a roughly 66-second prefill.
+- Added a bounded automatic startup sweep for text, sampler, long-prefill, and
+  generated 1920x1080 native-vision shapes. The measured sweep passed 15/15
+  requests in 31 seconds.
+- Made prefill batch size, long-prefill threshold, and prefix-retention interval
+  explicit on both ranks so a stale worker environment cannot create an
+  asymmetric runtime.
+- Rejected a 16K prefill batch after the engine proved it could not retain the
+  1M context window at the validated memory limit; retained the safe 8K value.
 - Reduced the default GPU memory reservation from `0.90` to `0.80`. The 1M
   request ceiling remains unchanged, while the two unified-memory hosts retain
   enough headroom for transient CUDA, vision, and operating-system allocations.

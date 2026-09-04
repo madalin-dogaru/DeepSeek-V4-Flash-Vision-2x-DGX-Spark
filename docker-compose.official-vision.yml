@@ -34,6 +34,7 @@ services:
       HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
       TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-1}"
       HF_HUB_DISABLE_XET: "${HF_HUB_DISABLE_XET:-1}"
+      VLLM_API_KEY: "${VLLM_API_KEY:-}"
       DSPARK_MODEL_OFFICIAL: "${DSPARK_MODEL_OFFICIAL:-deepseek-ai/DeepSeek-V4-Flash-Vision-Exp}"
       DSPARK_REVISION: "${DSPARK_REVISION:?DSPARK_REVISION must be set to the pinned model commit}"
       VLLM_HOST_IP: "${VLLM_HOST_IP}"
@@ -61,6 +62,8 @@ services:
       FLASHINFER_WORKSPACE_BASE: /cache/huggingface/flashinfer-official-4802-gb10-stable
       VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS: trtllm_fp4_block_scale_moe,flashinfer::trtllm_fp4_block_scale_moe
       VLLM_USE_BREAKABLE_CUDAGRAPH: "${VLLM_USE_BREAKABLE_CUDAGRAPH:-1}"
+      # Hybrid MLA/SWA needs periodic checkpoints to reuse completed prefixes.
+      VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "${VLLM_PREFIX_CACHE_RETENTION_INTERVAL:-4096}"
       VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN: "${VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN:-131072}"
       TRITON_CACHE_DIR: "${OFFICIAL_RUNTIME_CACHE_ROOT:-/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121}/triton"
       TILELANG_CACHE_DIR: "${OFFICIAL_RUNTIME_CACHE_ROOT:-/cache/huggingface/runtime-cache/vllm-1356635-pr54631-sm121}/tilelang"
